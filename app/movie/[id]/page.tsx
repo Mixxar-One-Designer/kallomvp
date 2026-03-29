@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { ArrowLeft, Play, Download, CheckCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { usePaystackPayment } from 'react-paystack'
 
 export default function MoviePage() {
   const { id } = useParams()
@@ -25,7 +24,6 @@ export default function MoviePage() {
     setLoading(true)
     const supabase = createClient()
     
-    // Fetch movie and user data in parallel
     const [movieResult, userResult] = await Promise.all([
       supabase.from('movies').select('*').eq('id', id).single(),
       supabase.auth.getUser()
@@ -53,7 +51,6 @@ export default function MoviePage() {
       setUnlocked(!!unlockData)
     }
 
-    // Check if imported
     const urlParams = new URLSearchParams(window.location.search)
     const imported = urlParams.get('imported')
     if (imported === 'true') {
@@ -72,7 +69,6 @@ export default function MoviePage() {
     fetchData()
   }, [fetchData])
 
-  // Refresh when page becomes visible
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -217,16 +213,6 @@ export default function MoviePage() {
     }
   }, [movie])
 
-  // Paystack config
-  const config = {
-    reference: new Date().getTime().toString(),
-    email: userEmail,
-    amount: movie?.price ? movie.price * 100 : 0,
-    publicKey: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY!,
-    currency: 'NGN',
-  }
-  const initializePayment = usePaystackPayment(config)
-
   const handlePayment = useCallback(() => {
     if (!movie || !userEmail) {
       toast.error('Please login to continue')
@@ -235,38 +221,58 @@ export default function MoviePage() {
     }
 
     setPaying(true)
+
+    // Load Paystack script dynamically
+    const existingScript = document.querySelector('script[src="https://js.paystack.co/v1/inline.js"]')
     
-    initializePayment({
-      onSuccess: async (reference: any) => {
-        const supabase = createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-        
-        if (user) {
-          const { error } = await supabase.from('unlocks').insert({
-            movie_id: id,
-            user_id: user.id,
-            amount: movie.price,
-            used: true,
-            unlock_code: `PAY_${reference.reference}`,
-            payment_reference: reference.reference
-          })
+    const initializePayment = () => {
+      const handler = (window as any).PaystackPop.setup({
+        key: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY,
+        email: userEmail,
+        amount: movie.price * 100,
+        ref: new Date().getTime().toString(),
+        currency: 'NGN',
+        callback: async (response: any) => {
+          const supabase = createClient()
+          const { data: { user } } = await supabase.auth.getUser()
           
-          if (error) {
-            toast.error('Payment succeeded but unlock failed.')
-          } else {
-            setUnlocked(true)
-            toast.success('Movie unlocked!')
-            fetchData()
+          if (user) {
+            const { error } = await supabase.from('unlocks').insert({
+              movie_id: id,
+              user_id: user.id,
+              amount: movie.price,
+              used: true,
+              unlock_code: `PAY_${response.reference}`,
+              payment_reference: response.reference
+            })
+            
+            if (error) {
+              toast.error('Payment succeeded but unlock failed.')
+            } else {
+              setUnlocked(true)
+              toast.success('Movie unlocked!')
+              fetchData()
+            }
           }
+          setPaying(false)
+        },
+        onClose: () => {
+          toast.error('Payment cancelled')
+          setPaying(false)
         }
-        setPaying(false)
-      },
-      onClose: () => {
-        toast.error('Payment cancelled')
-        setPaying(false)
-      }
-    })
-  }, [movie, userEmail, id, router, initializePayment, fetchData])
+      })
+      handler.openIframe()
+    }
+
+    if (existingScript) {
+      initializePayment()
+    } else {
+      const script = document.createElement('script')
+      script.src = 'https://js.paystack.co/v1/inline.js'
+      script.onload = initializePayment
+      document.body.appendChild(script)
+    }
+  }, [movie, userEmail, id, router, fetchData])
 
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center bg-dark">Loading...</div>
